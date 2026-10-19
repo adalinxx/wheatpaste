@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Wheatpaste</title>
+  <meta name="description" content="One shared billboard. Post an ad on any part of it, over anyone, any time.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="mark" href="#/">Wheatpaste</a>
+    <button class="layer" id="owners" type="button" aria-pressed="false">Owners</button>
+  </header>
+  <main class="stage">
+    <div class="board" id="board" aria-label="The billboard, 32 by 18 squares"></div>
+    <p class="status" id="status" role="status"></p>
+  </main>
+  <aside class="panel" id="panel" hidden></aside>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
