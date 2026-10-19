@@ -5,6 +5,7 @@ import * as sdk from "../client/lattice-sdk.js";
 import * as board from "../client/board.mjs";
 import { anyHost, chainSpec, get, list, volumeLoader } from "../client/state.mjs";
 import { writeRequest } from "../client/wallet.mjs";
+import { createMoniker } from "https://cdn.jsdelivr.net/gh/adalinxx/moniker-sdk@v0.1.2/src/index.mjs";
 
 // ---------------------------------------------------------------- settings
 
@@ -50,7 +51,7 @@ async function latest() {
 async function blockTime() {
   const url = new URL("/api/blocks", NODES[0]);
   url.searchParams.set("chainPath", CHAIN.join("/"));
-  url.searchParams.set("limit", "30");
+  url.searchParams.set("limit", "100");
   const { blocks } = await (await fetch(url, { cache: "no-store" })).json();
   const times = blocks.map((b) => Number(b.timestamp));
   return times.length > 2 ? (Math.max(...times) - Math.min(...times)) / (times.length - 1) : null;
@@ -63,9 +64,9 @@ async function refresh() {
   const state = sdk.decodeCanonicalLatticeState((await volumes.get(block.postStateCID)).rootBytes());
   if (!live.spec) {
     live.spec = await chainSpec(sdk, volumes, block.specCID);
-    live.blockMs = Number(live.spec.targetBlockTime ?? 10_000);
+    // Measured once a visit, so prices on the page hold still.
+    live.blockMs = (await blockTime().catch(() => null)) ?? Number(live.spec.targetBlockTime ?? 10_000);
   }
-  live.blockMs = (await blockTime().catch(() => null)) ?? live.blockMs;
   const root = state.generalStateCID;
   const entries = [];
   for (const prefix of ["parcel/", "cell/"]) for await (const entry of list(load, root, prefix)) entries.push(entry);
@@ -120,8 +121,37 @@ function whenBlock(height) {
   if (days < 7) return `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
   return `${at.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
 }
+// Names come from Moniker, the shared profile chain: a name or @handle, else a short address.
+const moniker = createMoniker({ sdk });
+const names = new Map();
+function nameOf(address) {
+  if (!names.has(address)) {
+    names.set(address, null);
+    moniker.profile(address).then((p) => {
+      const label = moniker.label(p);
+      if (label === short(address)) return;
+      names.set(address, label);
+      render();
+    }).catch(() => {});
+  }
+  return names.get(address) ?? short(address);
+}
+/** A Moniker name for an account, once known; otherwise nothing. */
+function named(address) {
+  const name = nameOf(address);
+  return name === short(address) ? null : name;
+}
+/** How to name an ad in a list: its caption, else its poster's name, else its size. */
+function adName(post) {
+  const caption = contentOf(post).caption;
+  if (caption) {
+    const clause = caption.split(/[:,.;!?–—]/)[0].trim();
+    return clause.length > 26 ? `${clause.slice(0, clause.lastIndexOf(" ", 25)).trim() || clause.slice(0, 25)}…` : clause;
+  }
+  return named(post.poster) ?? `the ${post.rect.w} × ${post.rect.h} ad`;
+}
 const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-const short = (address) => `${address.slice(0, 10)}…${address.slice(-4)}`;
+const short = (address) => `${address.slice(0, 7)}…${address.slice(-5)}`;
 const esc = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 // ---------------------------------------------------------------- wallet
@@ -209,13 +239,14 @@ function quote() {
 
 function renderBoard(q) {
   const el = $("#board");
-  el.className = `board${ui.owners ? "" : " drawing"}`;
+  el.className = `board${ui.owners ? " owners" : " drawing"}`;
   el.replaceChildren();
   if (!live.board) return;
   const down = new Set(q?.down.map((p) => p.value) ?? []);
   for (const post of board.upPosts(live.board)) {
     const content = contentOf(post);
-    const ad = div(`ad${down.has(post.value) ? " down" : ""}${hidden.has(post.value) ? " hidden" : ""}`);
+    const on = ui.selected?.kind === "ad" && ui.selected.value === post.value;
+    const ad = div(`ad${down.has(post.value) ? " down" : ""}${hidden.has(post.value) ? " hidden" : ""}${on ? " on" : ""}`);
     ad.dataset.value = post.value;
     ad.innerHTML = content.image ? `<img alt="${esc(content.caption ?? "")}" src="${content.image}">` : `<div class="blank">${post.rect.w > 3 ? "No image" : ""}</div>`;
     ad.title = [content.caption, content.link && safeLink(content.link)?.host].filter(Boolean).join(" · ");
@@ -228,7 +259,7 @@ function renderBoard(q) {
   if (ui.owners) {
     for (const parcel of live.board.parcels) {
       const on = ui.selected?.kind === "parcel" && ui.selected.key === parcel.key;
-      const p = div(`parcel${parcel.owner === account ? " mine" : ""}${on ? " on" : ""}`, `<span>${parcel.ask == null ? short(parcel.owner) : `For sale · ${fmt(parcel.ask)}`}</span>`);
+      const p = div(`parcel${parcel.owner === account ? " mine" : ""}${on ? " on" : ""}`, `${parcel.ask != null ? `<span>For sale · ${fmt(parcel.ask)}</span>` : parcel.owner === account ? "<span>Yours</span>" : named(parcel.owner) ? `<span>${esc(named(parcel.owner))}</span>` : ""}`);
       p.dataset.key = parcel.key;
       el.append(place(p, parcel.rect));
     }
@@ -254,7 +285,7 @@ function renderStatus() {
   s.textContent = live.board.parcels.length === 0
     ? "Nobody has claimed this board yet."
     : phone
-      ? `${up.length} ${up.length === 1 ? "ad" : "ads"} · ${free} squares free. Tap an ad to see it.`
+      ? `${up.length} ${up.length === 1 ? "ad" : "ads"} · ${free} squares free. Tap an ad to see it. Posting works in a desktop browser.`
       : `${up.length} ${up.length === 1 ? "ad" : "ads"} · ${free} squares free. Drag across the board to post your own, anywhere, over anyone.`;
 }
 
@@ -263,11 +294,35 @@ function renderStatus() {
 function renderPanel(q) {
   const panel = $("#panel");
   const s = ui.selected;
-  panel.hidden = !s;
-  if (!s || !live.board) return;
-  if (s.kind === "space") panel.innerHTML = spacePanel(q);
+  panel.classList.toggle("idle", !s);
+  if (!live.board) return;
+  // Never redraw under someone typing.
+  if (panel.contains(document.activeElement) && document.activeElement.matches("input")) return;
+  if (!s) panel.innerHTML = idlePanel();
+  else if (s.kind === "space") panel.innerHTML = spacePanel(q);
   else if (s.kind === "ad") panel.innerHTML = adPanel(selectedAd());
   else panel.innerHTML = parcelPanel(selectedParcel());
+}
+
+/** With nothing selected: what the board is, in three lines, and how it is doing. */
+function idlePanel() {
+  const up = board.upPosts(live.board);
+  const free = board.WIDTH * board.HEIGHT - up.reduce((n, p) => n + board.area(p.rect), 0);
+  if (ui.owners) {
+    const forSale = live.board.parcels.filter((p) => p.ask != null).length;
+    return `
+      <h2>Who owns the board</h2>
+      <p>The board is cut into ${live.board.parcels.length} ${live.board.parcels.length === 1 ? "piece" : "pieces"} of space. Owners are paid by every ad posted on their squares, and set what an empty square costs.</p>
+      <p class="muted">${forSale ? `${forSale} for sale. ` : ""}Pick a piece to see it${forSale ? " or buy it" : ""}.</p>`;
+  }
+  return `
+    <h2>Post an ad anywhere</h2>
+    <ol class="how">
+      <li>Drag across the board to pick space.</li>
+      <li>Add an image and choose how long.</li>
+      <li>Pay once. Covering an ad takes it down and refunds its unused time.</li>
+    </ol>
+    <p class="muted">${up.length} ${up.length === 1 ? "ad" : "ads"} up · ${free} of ${board.WIDTH * board.HEIGHT} squares free</p>`;
 }
 
 const head = (title, sub = "") => `<div class="head"><div><h2>${title}</h2>${sub ? `<p class="muted">${sub}</p>` : ""}</div><button class="close" data-close aria-label="Close">×</button></div>`;
@@ -278,37 +333,45 @@ function spacePanel(q) {
   const squares = board.area(rect);
   const owners = new Set(q.parcels.map((p) => p.owner));
   const space = q.payments.filter((p) => owners.has(p.to)).reduce((n, p) => n + p.amount, 0n);
-  const back = q.cost - space;
-  const downNote = q.down.length
-    ? `<p class="down-note">Covers ${q.down.length === 1 ? "an ad" : `${q.down.length} ads`}. ${q.down.length === 1 ? "It comes" : "They come"} down whole when yours goes up, and you pay ${q.down.length === 1 ? "it" : "them"} back for unused time.</p>`
-    : "";
-  const action = !wallet()
+  const backs = q.down
+    .filter((p) => p.poster !== account)
+    .map((p) => {
+      const hours = Number(p.end - live.height) * live.blockMs / 3_600_000;
+      const left = hours >= 1 ? `${Math.round(hours)} h left` : `${Math.max(1, Math.round(hours * 60))} min left`;
+      return `<div><span>Refund to ${esc(adName(p))} <em>${left}</em></span><span>${fmt(p.rate * BigInt(board.area(p.rect)) * (p.end - q.terms.start))}</span></div>`;
+    })
+    .join("");
+  const noWallet = !wallet()
     ? phone
-      ? `<p class="muted">Posting works on a computer, with the Selfhold wallet.</p>`
-      : `<p class="muted">Posting needs Selfhold, the wallet for Lattice. Add it, then come back to this tab.</p><a class="go" style="text-align:center;text-decoration:none" href="${WALLET_URL}" target="_blank" rel="noopener">Add Selfhold</a>`
-    : `<button class="go" data-post ${d.image ? "" : "disabled"}>${d.image ? `Post for ${fmt(q.cost)}` : "Add an image to post"}</button>`;
+      ? `<p class="down-note">Posting works in a desktop browser with the Selfhold wallet.</p>`
+      : `<div class="need"><p>Posting needs Selfhold, a browser wallet. Add it, then come back to this tab.</p><a class="quiet" href="${WALLET_URL}" target="_blank" rel="noopener">Add Selfhold</a></div>`
+    : "";
+  const action = wallet() ? `<button class="go" data-post ${d.image ? "" : "disabled"}>${d.image ? `Post for ${fmt(q.cost)}` : "Add an image to post"}</button>` : "";
   return `
     ${head("Post here", `${rect.w} × ${rect.h} squares`)}
-    ${downNote}
+    ${noWallet}
+    ${q.down.length ? `<p class="down-note">Takes down ${q.down.length === 1 ? "1 ad" : `${q.down.length} ads`}, whole.</p>` : ""}
     <label class="drop${d.image ? " has" : ""}" for="file">
       <strong>${d.image ? "Change image" : "Add your image"}</strong>
       <span class="muted">${d.image ? "It fills the squares you picked." : `Cropped to fit ${rect.w} × ${rect.h}. PNG, JPEG or WebP.`}</span>
     </label>
     <input id="file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-    <div class="field"><label for="link">Link, optional</label><input id="link" type="url" placeholder="https://" value="${esc(d.link)}"></div>
-    <div class="field"><label for="caption">Caption, shown on hover</label><input id="caption" maxlength="140" value="${esc(d.caption)}"></div>
+    <div class="field"><label for="link">Link, optional</label><input id="link" type="url" placeholder="https://your-site.com" value="${esc(d.link)}"></div>
+    ${d.captioning || d.caption
+      ? `<div class="field"><label for="caption">Caption</label><input id="caption" maxlength="140" placeholder="Shown when someone points at your ad" value="${esc(d.caption)}"></div>`
+      : `<button class="text" data-caption>Add a caption</button>`}
     <div class="field"><span class="label">How long</span>
       <div class="choice">${DURATIONS.map(([label, hours]) => `<button data-hours="${hours}" aria-pressed="${d.hours === hours}">${label}</button>`).join("")}</div>
+      <p class="muted">Up until ${whenBlock(q.terms.end)}.</p>
     </div>
-    <div class="field"><span class="label">Price per hour</span>
-      <div class="stepper"><button data-rate="-1" aria-label="Lower" ${d.rate <= q.least ? "disabled" : ""}>−</button><output>${fmt(perHour(d.rate, squares))}</output><button data-rate="1" aria-label="Raise">+</button></div>
-      <p class="muted">${q.least > 0n ? `The least for this space is ${fmt(perHour(q.least, squares))} an hour.` : "This space is free right now."} To cover your ad, someone must pay at least what you pay.</p>
+    <div class="field"><span class="label">Price, per square per hour</span>
+      <div class="stepper"><button data-rate="-1" aria-label="Lower" ${d.rate <= q.least ? "disabled" : ""}>−</button><output>${fmt(perHour(d.rate, 1))}</output><button data-rate="1" aria-label="Raise">+</button></div>
+      <p class="muted">${fmt(perHour(d.rate, squares))} an hour for ${squares} squares. ${q.least > 0n ? `At least ${fmt(perHour(q.least, 1))}: ${q.down.length ? "what the ads you cover pay" : "the owner's price"}.` : "This space is free right now."} Whoever covers your ad must pay at least your price.</p>
     </div>
     <div class="lines">
       <div><span>Space, paid to ${owners.size === 1 ? "its owner" : `${owners.size} owners`}</span><span>${fmt(space)}</span></div>
-      ${q.down.length ? `<div><span>Paid back to covered ads</span><span>${fmt(back)}</span></div>` : ""}
+      ${backs}
       <div class="total"><span>Total</span><span>${fmt(q.cost)}</span></div>
-      <p class="muted">Ends ${whenBlock(q.terms.end)}.</p>
     </div>
     ${action}`;
 }
@@ -317,19 +380,17 @@ function adPanel(post) {
   if (!post) return head("This ad is gone");
   const c = contentOf(post);
   const link = c.link && safeLink(c.link);
-  const squares = board.area(post.rect);
   const isHidden = hidden.has(post.value);
   return `
-    ${head(c.caption ? esc(c.caption) : "An ad", `${post.rect.w} × ${post.rect.h} squares · by ${short(post.poster)}`)}
-    ${c.image && !isHidden ? `<img class="preview" alt="" src="${c.image}">` : ""}
+    ${head(c.caption ? `<span class="caption">${esc(c.caption)}</span>` : link ? `<span class="caption">${esc(link.host)}</span>` : "An ad", [`${post.rect.w} × ${post.rect.h} squares`, named(post.poster) && `by ${esc(named(post.poster))}`].filter(Boolean).join(" · "))}
     ${link ? `<a class="go" style="text-align:center;text-decoration:none" href="${esc(link.href)}" target="_blank" rel="noopener nofollow">Visit ${esc(link.host)} ↗</a>` : ""}
     <div class="lines">
       <div><span>Up until</span><span>${whenBlock(post.end)}</span></div>
-      <div><span>Pays</span><span>${fmt(perHour(post.rate, squares))} / hour</span></div>
+      <div><span>Pays its owners</span><span>${fmt(perHour(post.rate, 1))} / square / hour</span></div>
     </div>
     <div class="row">
       ${phone ? "" : `<button class="quiet" data-cover>Post over this</button>`}
-      <button class="quiet" data-hide>${isHidden ? "Show it" : "Hide it for me"}</button>
+      <button class="quiet" data-hide>${isHidden ? "Show it again" : "Hide for me"}</button>
     </div>`;
 }
 
@@ -345,24 +406,24 @@ function parcelPanel(parcel) {
   const facts = `
     <div class="lines">
       <div><span>Size</span><span>${parcel.rect.w} × ${parcel.rect.h}</span></div>
-      <div><span>Empty squares cost</span><span>${fmt(perHour(parcel.min, 1))} / hour each</span></div>
+      <div><span>Empty squares cost</span><span>${fmt(perHour(parcel.min, 1))} / square / hour</span></div>
       <div><span>Earning now</span><span>${fmt(earning)} / hour</span></div>
       <div><span>For sale</span><span>${parcel.ask == null ? "No" : fmt(parcel.ask)}</span></div>
     </div>`;
   if (!mine) {
     return `
-      ${head(`${squares} squares`, `Owned by ${short(parcel.owner)}`)}
+      ${head(`${squares} squares`, `Owned by ${esc(nameOf(parcel.owner))}`)}
       ${facts}
       ${parcel.ask != null ? (wallet() ? `<button class="go" data-buy>Buy for ${fmt(parcel.ask)}</button>` : `<p class="muted">Buying needs Selfhold, the wallet for Lattice.</p>`) : ""}
       <p class="muted">The owner is paid by every ad posted on these squares. Ads already up stay up when it sells.</p>
-      ${wallet() && !account ? `<button class="quiet" data-whoami>This is mine</button>` : ""}`;
+      ${wallet() && !account ? `<button class="quiet" data-whoami>Manage my space</button>` : ""}`;
   }
   const cut = ui.cut;
   const span = cut ? (cut.axis === "x" ? parcel.rect.w : parcel.rect.h) : 0;
   return `
     ${head(`Your ${squares} squares`, "You own this space")}
     ${facts}
-    <div class="field"><label for="min">Empty squares, per hour each</label>
+    <div class="field"><label for="min">Empty squares, per square per hour</label>
       <div class="stepper"><button data-min="-1" aria-label="Lower" ${parcel.min === 0n ? "disabled" : ""}>−</button><output id="min">${fmt(perHour(ui.min ?? parcel.min, 1))}</output><button data-min="1" aria-label="Raise">+</button></div></div>
     <div class="field"><label for="ask">Sell it for, empty for not for sale</label><input id="ask" inputmode="numeric" value="${parcel.ask ?? ""}"></div>
     <button class="go" data-save>Save</button>
@@ -455,6 +516,11 @@ $("#panel").addEventListener("click", async (event) => {
     return render();
   }
   if (t.matches("[data-post]")) return post(q);
+  if (t.matches("[data-caption]")) {
+    ui.draft.captioning = true;
+    render();
+    return $("#caption")?.focus();
+  }
   if (t.matches("[data-cover]")) return pickSpace(selectedAd().rect);
   if (t.matches("[data-hide]")) {
     const ad = selectedAd();
@@ -462,7 +528,12 @@ $("#panel").addEventListener("click", async (event) => {
     return render();
   }
   if (t.matches("[data-whoami]")) {
-    await connect().catch((error) => toast(walletMessage(error), { bad: true }));
+    try {
+      const me = await connect();
+      if (selectedParcel()?.owner !== me) toast("Your wallet's account doesn't own this space.", { bad: true });
+    } catch (error) {
+      toast(walletMessage(error), { bad: true });
+    }
     return render();
   }
   const parcel = selectedParcel();
