@@ -344,7 +344,7 @@ function spacePanel(q) {
   const noWallet = !wallet()
     ? phone
       ? `<p class="down-note">Posting works in a desktop browser with the Selfhold wallet.</p>`
-      : `<div class="need"><p>Posting needs Selfhold, a browser wallet. Add it, then come back to this tab.</p><a class="quiet" href="${WALLET_URL}" target="_blank" rel="noopener">Add Selfhold</a></div>`
+      : `<div class="need"><p>Posting needs Selfhold, a browser wallet. Add it, then reload this page.</p><a class="quiet" href="${WALLET_URL}" target="_blank" rel="noopener">Add Selfhold</a></div>`
     : "";
   const action = wallet() ? `<button class="go" data-post ${d.image ? "" : "disabled"}>${d.image ? `Post for ${fmt(q.cost)}` : "Add an image to post"}</button>` : "";
   return `
@@ -659,5 +659,7 @@ async function tick() {
   }
 }
 document.addEventListener("keydown", (event) => event.key === "Escape" && select(null));
+// The wallet injects `window.lattice` as the page loads; it may come just after.
+window.addEventListener("lattice#initialized", () => render());
 await tick();
 setInterval(tick, 5000);
