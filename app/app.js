@@ -3,7 +3,7 @@
 // no wallet.
 import * as sdk from "../client/lattice-sdk.js";
 import * as board from "../client/board.mjs";
-import { anyHost, chainSpec, get, list, volumeLoader } from "../client/state.mjs";
+import { chainSpec, get, list, volumeLoader } from "../client/state.mjs";
 import { writeRequest } from "../client/wallet.mjs";
 import { createMoniker } from "https://cdn.jsdelivr.net/gh/adalinxx/moniker-sdk@v0.1.2/src/index.mjs";
 
@@ -24,38 +24,45 @@ const IMAGE = /^data:image\/(webp|png|jpeg);base64,[A-Za-z0-9+/]+=*$/;
 
 // ---------------------------------------------------------------- reading
 
-const transport = anyHost(NODES.map((node) => new sdk.HTTPVolumeTransport(`${node}/volumes`, { chainPath: CHAIN })));
-const volumes = new sdk.VolumeClient(transport);
+// The chain is read from the nodes that serve it: the start nodes that do
+// (`?nodes=`, else the trial hosts), then the hosts its directory declares
+// (the SDK's ChainNodes).
+const browserFetch = (...args) => fetch(...args);
+const nodes = new sdk.ChainNodes(NODES, { fetch: browserFetch });
+// Content is addressed by CID, so any node serving the chain may serve it: a
+// read moves on from one that lacks it or fails.
+const volumes = new sdk.VolumeClient({
+  getVolume: (rootCID, signal) =>
+    nodes.read(CHAIN, async (node) => {
+      const volume = await new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: CHAIN }).getVolume(rootCID, signal);
+      if (!volume) throw new Error(`${node.url} lacks ${rootCID}`);
+      return volume;
+    }),
+});
 const load = volumeLoader(volumes, sdk.decodeDagCbor);
 
 /** What the page shows: the board at the latest tip, and each post's content. */
 const live = { hash: null, height: 0n, board: null, content: new Map(), blockMs: 10_000, root: null };
 
-async function latest() {
-  let failure;
-  for (const node of NODES) {
-    try {
-      const url = new URL("/api/block/latest", node);
-      url.searchParams.set("chainPath", CHAIN.join("/"));
-      const response = await fetch(url, { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } catch (error) {
-      failure = error;
-    }
-  }
-  throw failure;
-}
+const latest = () =>
+  nodes.read(CHAIN, async (node) => {
+    const url = new URL("/api/block/latest", node.url);
+    url.searchParams.set("chainPath", CHAIN.join("/"));
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  });
 
 /** How long a block takes lately: the mean gap over the last blocks. Times and hourly prices use it. */
-async function blockTime() {
-  const url = new URL("/api/blocks", NODES[0]);
-  url.searchParams.set("chainPath", CHAIN.join("/"));
-  url.searchParams.set("limit", "100");
-  const { blocks } = await (await fetch(url, { cache: "no-store" })).json();
-  const times = blocks.map((b) => Number(b.timestamp));
-  return times.length > 2 ? (Math.max(...times) - Math.min(...times)) / (times.length - 1) : null;
-}
+const blockTime = () =>
+  nodes.read(CHAIN, async (node) => {
+    const url = new URL("/api/blocks", node.url);
+    url.searchParams.set("chainPath", CHAIN.join("/"));
+    url.searchParams.set("limit", "100");
+    const { blocks } = await (await fetch(url, { cache: "no-store" })).json();
+    const times = blocks.map((b) => Number(b.timestamp));
+    return times.length > 2 ? (Math.max(...times) - Math.min(...times)) / (times.length - 1) : null;
+  });
 
 async function refresh() {
   const tip = await latest();

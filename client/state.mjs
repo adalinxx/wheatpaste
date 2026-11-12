@@ -30,31 +30,6 @@ export function volumeLoader(volumes, decodeDagCbor) {
   };
 }
 
-/**
- * One transport over many hosts. Content is addressed by CID, so whoever
- * holds it may serve it: each read starts at the next host and moves on from
- * one that lacks the content, refuses, or serves bytes that fail their CID.
- */
-export function anyHost(transports) {
-  let next = 0;
-  return {
-    async getVolume(rootCID, signal) {
-      const start = next++;
-      let failure;
-      for (let offset = 0; offset < transports.length; offset++) {
-        try {
-          const volume = await transports[(start + offset) % transports.length].getVolume(rootCID, signal);
-          if (volume) return volume;
-        } catch (error) {
-          failure = error;
-        }
-      }
-      if (failure) throw failure;
-      return null;
-    },
-  };
-}
-
 function childFor(node, rest) {
   const first = String.fromCodePoint(rest.codePointAt(0));
   return node.children.find((child) => child.key === first)?.value.rawCID;

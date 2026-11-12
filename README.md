@@ -45,7 +45,8 @@ Owners who want more traffic cut their space into smaller parcels.
   Lattice's own evaluator.
 - `client/board.mjs`: the board as records, and every write: post, take
   down, claim, set terms, buy, cut. `state.mjs` and `wallet.mjs` come from
-  moniker-sdk.
+  moniker-sdk. `lattice-sdk.js` is 0xLattice/lattice-sdk at `382bf8c`,
+  bundled for the browser as Stoa's `app/vendor/README.md` shows.
 - `app/`: the page. The board is the page; drag across it to post. Reads
   need no wallet; writes go to Selfhold, one approval each.
 - `e2e/board.mjs`: the rules against a real node. `e2e/ui/shots.mjs`:
@@ -61,5 +62,7 @@ LATTICE=<lattice-node>/.build/debug/lattice LATTICE_SDK=<lattice-sdk>/packages/s
 ## Trial
 
 The trial board is `Nexus/testnet/wheatpaste-acbbcf`, hosted by the shared
-testnet hosts `lattice-testnet-apps-iad` and `-ams`. Writes there are free of
+testnet hosts `lattice-testnet-apps-iad` and `-ams`. The page starts at
+those (or `?nodes=`) and reads from whichever nodes the chain's directory
+says serve it, so the board can move hosts. Writes there are free of
 fees; posting still pays owners in the chain's coin.
