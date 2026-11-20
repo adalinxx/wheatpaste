@@ -10,7 +10,7 @@ import { createMoniker } from "https://cdn.jsdelivr.net/gh/adalinxx/moniker-sdk@
 // ---------------------------------------------------------------- settings
 
 const params = new URLSearchParams(location.search);
-const NODES = (params.get("nodes") ?? "https://lattice-testnet-apps-iad.fly.dev,https://lattice-testnet-apps-ams.fly.dev").split(",");
+const NODES = (params.get("nodes") ?? "https://lattice-testnet-apps-iad.fly.dev,https://ams.testnet.lattice.build").split(",");
 const CHAIN = (params.get("chain") ?? "Nexus/testnet/wheatpaste-acbbcf").split("/");
 // The trial chain's hosts admit 0-fee writes.
 const FEE = 0n;
